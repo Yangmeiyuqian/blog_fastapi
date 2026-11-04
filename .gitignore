@@ -1,0 +1,55 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境（非常重要）
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# 本地环境变量（记住 .env.example 要保留提交！）
+.env
+.env.local
+.env.test
+
+# 日志文件
+*.log
+logs/
+
+# pytest 测试产物
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# alembic 迁移本身是要提交的！不要忽略 alembic/
+# 只有 alembic.ini 如果里面写死密码才要注意，一般提交没问题
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
