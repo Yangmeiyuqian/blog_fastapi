@@ -9,7 +9,10 @@ import uvicorn
 app = FastAPI(
     title="博客系统接口",
     version="v1.0.0",
-    description="基于FastAPI标准后端博客系统"
+    description="基于FastAPI标准后端博客系统",
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1  # -1 = Schemas默认收起
+    }
 )
 
 # 挂载路由
@@ -35,13 +38,12 @@ def health_check():
     logger.info("健康检查调用")
     return { "code": 0,"version": "v1.0.0","message": "服务运行正常" }
 
+# main.py 末尾
 if __name__ == "__main__":
-    # main.py 末尾
-    if __name__ == "__main__":
-        uvicorn.run(
-            "main:app",
-            host=settings.HOST,
-            port=settings.APP_PORT,
-            reload=settings.DEBUG,  # 开启热加载
-            reload_dirs=["."]
-        )
+    uvicorn.run(
+        "main:app",
+        host=settings.HOST,
+        port=settings.APP_PORT,
+        reload=settings.DEBUG,  # 开启热加载
+        reload_dirs=["."]
+    )
