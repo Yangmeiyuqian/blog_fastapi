@@ -678,6 +678,100 @@ alembic upgrade head
 
 执行完成后，去 MySQL 里查看，就能看到 `users`、`posts`、`comments` 三张表已经创建好了。
 
+# 第三步：结构校验层
+
+schemas 层、它和数据库 ORM 模型不是一回事，职责完全不同：
+
+- **ORM 模型（db/models）**：对应数据库里的表，描述数据怎么存
+- **Pydantic 模型（schemas）**：对应接口的输入输出，描述接口收什么、返回什么
+  - 请求模型：自动校验入参，字段缺了、类型错了直接报错，不用手动写判断
+  - 响应模型：统一返回格式，自动过滤敏感字段（比如密码哈希绝对不能返回给前端）
+
+> 项目采用 ORM 模型和 Pydantic 模型分离的设计：数据层模型对应数据库表结构，接口层模型对应请求响应结构。既保证了数据校验和输出格式统一，也避免了数据库敏感字段泄露到接口返回中。
+
+------
+
+## 1.编写请求/响应模型
+
+三个文件分别放在 `app/schemas/` 目录下：`user.py`、`post.py`、`comment.py`。
+
+统一规则：
+
+1. 所有模型都继承 `pydantic.BaseModel`
+2. **响应模型必须加** `from_attributes = True` 配置，支持直接从 ORM 数据库对象转换
+3. 响应模型里绝对不能出现 `password_hash` 这类敏感字段
+4. 可选字段标注类型为 `Optional[str]` 或者 `str | None`
+
+------
+
+①用户模块 `user.py`
+
+请求模型：UserCreate（注册用）
+
+- `username`：字符串，必填
+- `password`：字符串，必填（明文，接口收到后在服务层转哈希）
+- `email`：字符串，可选
+
+响应模型：UserResponse（返回用户信息用）
+
+- `id`：整数
+- `username`：字符串
+- `email`：字符串 / 空
+- `is_active`：布尔值
+- `created_at`：时间
+
+------
+
+②文章模块 `post.py`
+
+请求模型：PostCreate（发布文章用）
+
+- `title`：字符串，必填
+- `content`：字符串，必填
+
+响应模型：PostResponse（返回文章详情用）
+
+- `id`：整数
+- `title`：字符串
+- `content`：字符串
+- `author_id`：整数
+- `created_at`：时间
+- `updated_at`：时间
+
+------
+
+③评论模块 `comment.py`
+
+请求模型：CommentCreate（发布评论用）
+
+- `content`：字符串，必填
+- `post_id`：整数，必填
+
+响应模型：CommentResponse（返回评论用）
+
+- `id`：整数
+- `content`：字符串
+- `post_id`：整数
+- `author_id`：整数
+- `created_at`：时间
+
+------
+
+小提示
+
+- 导入：`from pydantic import BaseModel`，时间类型用 `datetime.datetime`，可选类型用 `Optional` 或者 `| None`
+
+- 响应模型的 Config 写法：
+
+  ```
+  class Config:
+      from_attributes = True
+  ```
+
+  这个配置的作用是：允许直接把数据库查出来的 ORM 对象，自动转成 Pydantic 响应模型，不用手动一个个字段赋值。
+
+## 核心安全工具补全
+
 # 启动项目
 
 ### ✅ 开发环境（带热重载，日常就用这个）
