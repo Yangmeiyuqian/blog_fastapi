@@ -558,6 +558,126 @@ def health_check():
     return {"code": 0, "message": "服务运行正常", "version": "1.0.0"}
 ```
 
+# 第二步：数据库层地基
+
+## 1.编写ORM数据模型
+
+编写三张表的 ORM 模型，三个模型文件分别放在 `app/db/models/` 目录下：`user.py`、`post.py`、`comment.py`。
+
+前置统一规则：
+
+1. 所有模型都继承 `app.db.base` 里的 `Base` 类
+2. 用 `__tablename__` 指定数据库里的真实表名
+3. 字段全部用 `Column(类型, 约束)` 定义
+
+字段清单与约束要求：
+
+①用户表`users`
+
+| 字段名        | 类型              | 约束               |
+| ------------- | ----------------- | ------------------ |
+| id            | 整数              | 主键、自增         |
+| username      | 字符串 (最长 50)  | 唯一、非空、加索引 |
+| password_hash | 字符串 (最长 255) | 非空               |
+| email         | 字符串 (最长 100) | 唯一、可为空       |
+| is_active     | 布尔值            | 默认值 True        |
+| created_at    | 时间              | 默认当前时间       |
+
+②文章表`posts`
+
+| 字段名     | 类型              | 约束                         |
+| ---------- | ----------------- | ---------------------------- |
+| id         | 整数              | 主键、自增                   |
+| title      | 字符串 (最长 200) | 非空、加索引                 |
+| content    | 长文本            | 非空                         |
+| author_id  | 整数              | 外键关联 `users.id`、非空    |
+| created_at | 时间              | 默认当前时间                 |
+| updated_at | 时间              | 默认当前时间、更新时自动刷新 |
+
+③评论表`comments`
+
+| 字段名     | 类型              | 约束                      |
+| ---------- | ----------------- | ------------------------- |
+| id         | 整数              | 主键、自增                |
+| content    | 字符串 (最长 500) | 非空                      |
+| post_id    | 整数              | 外键关联 `posts.id`、非空 |
+| author_id  | 整数              | 外键关联 `users.id`、非空 |
+| created_at | 时间              | 默认当前时间              |
+
+```
+### 新手必看的踩坑提示
+
+1. **导入路径**
+   - 基类：`from app.db.base import Base`
+   - 字段工具：`from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey`
+   - 时间：`from datetime import datetime`
+2. **时间默认值不要加括号**
+写 `default=datetime.now`，不要写 `default=datetime.now()`。加了括号会在类定义时就固定死时间，不是插入数据时的当前时间。
+3. **更新时间自动刷新**`updated_at` 字段要加参数 `onupdate=datetime.now`，数据更新时自动刷新时间。
+4. **外键写法**`ForeignKey("表名.字段名")`，表名是数据库里的真实表名（`__tablename__` 的值），比如 `ForeignKey("users.id")`。
+5. **最后一步别漏**
+三个模型都写完后，在 `app/db/models/__init__.py` 里把三个模型都 import 进去，不然后面 Alembic 识别不到模型，生成不了迁移脚本。
+```
+
+## 2.导出模型
+
+三个模型都写完后，编辑 `app/db/models/__init__.py`，把三个模型都导入进去，不然迁移工具扫描不到模型，生成不了表。
+
+```
+from app.db.models.user import User
+from app.db.models.post import Post
+from app.db.models.comment import Comment
+```
+
+## 3.Alembic 数据库迁移
+
+①初始化迁移目录
+
+在项目根目录执行命令，会自动生成 `alembic` 文件夹和配置文件：
+
+```bash
+alembic init alembic
+```
+
+②修改两个配置文件
+
+修改 `alembic.ini`（在项目根目录下，和main.py同级）；
+
+找到 `sqlalchemy.url` 这一行，改成你的数据库连接地址，和 `.env` 里保持一致：
+
+```python
+sqlalchemy.url = mysql+pymysql://root:123456@127.0.0.1:3306/blog_db?charset=utf8mb4
+```
+
+修改 `alembic/env.py`；
+
+找到 `target_metadata` 相关的代码，改成导入我们的 `Base` 元数据，这样 Alembic 才能自动对比模型和数据表的差异：
+
+```python
+from app.db.base import Base  # 导入我们的ORM基类
+target_metadata = Base.metadata
+```
+
+> 提示：文件里原本有 `target_metadata = None`，把它替换成上面的写法。
+
+③生成首次迁移脚本
+
+执行命令，自动对比模型和数据库，生成建表的迁移脚本：
+
+```bash
+alembic revision --autogenerate -m "init tables"
+```
+
+执行成功后，去 `alembic/versions/` 目录下能看到生成的迁移文件，打开可以看到自动生成的建表语句。
+
+④执行迁移，数据库建表
+
+```bash
+alembic upgrade head
+```
+
+执行完成后，去 MySQL 里查看，就能看到 `users`、`posts`、`comments` 三张表已经创建好了。
+
 # 启动项目
 
 ### ✅ 开发环境（带热重载，日常就用这个）
@@ -595,21 +715,39 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 
 
-# 自我总结
+# Schema
 
-## 创建Class还是Function？
+![](D:\A_PythonAI\Coding_my\blog_fastapi\docs\images\schemas01.png)
 
-✅ 选 Class：
+先说重点：**这个不是bug，删不掉，只能默认折叠起来眼不见为净** 只要你的接口带参数校验（Query、Path、Pydantic模型），FastAPI自动注入这两个422错误Schema，代码层面没法直接移除定义。
 
-- 多个方法共用一堆内部变量
-- 语义上是一个独立组件（日志器、数据库管理、缓存管理、权限校验器）
-- 需要继承扩展
+## 方案
 
-✅ 选 函数：
+打开文档的时候自动折叠Schemas栏（推荐，一行配置搞定）
 
-- 纯转换、计算工具（加密、格式化）
-- 工厂获取实例（get_db、get_redis，FastAPI Depends 最常用）
-- 只有一两行逻辑，写类纯属增加代码量
+在你初始化 `FastAPI` 的地方加上 `swagger_ui_parameters`：
+
+```python
+app = FastAPI(
+    title="博客系统接口",
+    version="v1.0.0",
+    description="基于FastAPI标准后端博客系统",
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": 0  # 0 = Schemas默认收起
+    }
+)
+```
+
+改完重启服务，刷新 `/docs` 👉 Schemas 板块默认就是收起来的，不挡你的视线，要用的时候再点开看。
+
+------
+
+## Schema区别
+
+- `HTTPValidationError`：是**返回给前端**的422响应结构（接口抛出去的）
+- `ValidationError`：是Pydantic内部用的校验异常结构
+
+> ❌ 网上有些偏方想彻底删掉它，非常麻烦，还要改OpenAPI原始字典，不适合你现在练项目，容易把文档搞崩。
 
 
 
@@ -956,3 +1094,149 @@ git pull origin master --rebase
 再执行 push
 
 PyCharm图形化操作：右侧Git面板，也可以图形化 add / commit / push，不用敲命令
+
+# 同时推送Gitee、GitHub
+
+## 1.先配置（只做一次）
+
+```bash
+#先绑定gitee的ssh地址到origin的推送url
+git remote add origin git@gitee.com:你的名字/xxx.git
+
+#追加github的ssh地址到origin的推送url
+git remote set-url --add origin git@github.com:你的名字/你的仓库.git
+```
+
+✅ 切换dev分支：
+
+```bash
+git checkout dev
+```
+
+## 2.提交代码到本地仓库
+
+```bash
+git add .
+git commit -m "feat:新增XX功能"
+```
+
+场景1：commit之后，你**又改了文件，想把新修改塞进刚才这一次commit里**
+
+这时候才需要 add + 追加提交：
+
+```
+git add .
+git commit --amend --no-edit
+```
+
+- `--amend`：修改上一次commit，把新加的文件合并进去
+
+- `--no-edit`：**不修改commit备注，继续用 "提交README"**
+
+  > ⚠️ 注意：如果这个commit已经推到远程了，千万别amend！现在还没push，随便用没问题。
+
+场景2：你又改了文件，想做成**新的一次commit（保留N条记录）**
+
+那就正常走：
+
+```
+git add .
+git commit -m "补充xxx内容"
+```
+
+## 3.推送到远程仓库
+
+> 这一句**同时推Gitee + GitHub**
+>
+> `-u`：建立本地 dev 和远程 origin/dev 的追踪关系，**只第一次用**，之后就可以简写 `git push`
+
+```bash
+#第一次推送dev
+git push -u origin dev
+```
+
+查看是否配置成功：
+
+```bash
+git remote -v
+```
+
+你会看到 origin 有两行 push 地址
+
+```
+origin  git@gitee.com:xxx/xxx.git (fetch)
+origin  git@gitee.com:xxx/xxx.git (push)
+origin  git@github.com:xxx/xxx.git (push)
+```
+
+## 查看状态
+
+看看有没有红色未跟踪 / 修改文件
+
+```
+git status
+```
+
+- 如果输出：`nothing to commit, working tree clean` 👉 说明工作区干净，直接 `git push` 就把刚才【提交README】这条记录推到Gitee+GitHub
+
+## 4.配置同时推送
+
+配置both分组：
+
+```bash
+git config remotes.both "github origin"
+```
+
+配置完，再校验一下：
+
+```bash
+git config --list | Select-String remotes
+```
+
+之后一键推送命令：
+
+```bash
+git push both dev
+```
+
+这条命令等价于依次执行：
+
+```bash
+git push github dev
+git push origin dev
+```
+
+补充：
+
+- 以后切到 main 分支，就 `git push both main`
+
+- 如果哪天想删掉这个分组：
+
+- ```bash
+  git config --unset remotes.both
+  ```
+
+
+# 问题记录
+
+## 创建Class还是Function？
+
+✅ 选 Class：
+
+- 多个方法共用一堆内部变量
+- 语义上是一个独立组件（日志器、数据库管理、缓存管理、权限校验器）
+- 需要继承扩展
+
+✅ 选 函数：
+
+- 纯转换、计算工具（加密、格式化）
+- 工厂获取实例（get_db、get_redis，FastAPI Depends 最常用）
+- 只有一两行逻辑，写类纯属增加代码量
+
+## alembic建表迁徙脚本
+
+1.生成建表的迁徙脚本命令不成功？
+
+运行`alembic revision --autogenerate -m "init tables"`命令，无法成功生成建表迁徙脚本；
+
+注意：.env文件中的`mysql+pymysql://root:XXX@127.0.0.1:XXX/blog_db?charset=utf8mb4`格式不对；`mysql + pymysql`之间需要去掉空格； 修改.env文件需要重启项目。
