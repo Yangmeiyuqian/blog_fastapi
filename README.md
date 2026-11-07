@@ -770,7 +770,174 @@ schemas 层、它和数据库 ORM 模型不是一回事，职责完全不同：
 
   这个配置的作用是：允许直接把数据库查出来的 ORM 对象，自动转成 Pydantic 响应模型，不用手动一个个字段赋值。
 
-## 核心安全工具补全
+## 2.核心安全工具
+
+属于 core 核心层的系统级基础设施，是整个鉴权体系的底层底座，负责密码安全处理和 JWT 令牌管理，所有登录、鉴权逻辑都依赖它。
+
+```markdown
+依赖项：
+
+- 全局配置 `settings`
+- `passlib`：密码哈希加密
+- `python-jose`：JWT 生成与校验
+- 时间处理相关工具
+-----------------------------------------------------
+**Argon2 是现在业界首选的密码哈希算法（Memory-Hard 内存困难函数），是 2015 密码哈希大赛的冠军，OWASP 推荐首选，用来存用户密码，代替老旧的 bcrypt、md5、sha256**argon2-cff...。
+
+> 
+> 重点区分：
+> SHA256 只是摘要，**不能直接存密码**，GPU 一秒跑几十亿次爆破；
+> Argon2 故意设计成**吃内存 + 吃CPU**，GPU/ASIC 爆破成本极高，很难跑字典暴力破解。
+
+## 三个版本（你只用记 Argon2id）
+1. **Argon2d**：依赖数据访问内存，抗 GPU 强，但是容易受计时侧信道攻击 → 适合挖矿，**不适合网站密码**
+2. **Argon2i**：不依赖数据访问，防侧信道，但是抗 GPU 弱一点
+3. **Argon2id（你现在用的）**：前半段 i、后半段 d，两者优点合并，**Web 后端、登录系统标准选择**，RFC9106 标准推荐IETF
+
+## 它有 3 个可调参数（你哈希串里那串数字就是）
+拿你这条举例：
+`$argon2id$v=19$m=65536,t=3,p=4$...`
+
+- `m=65536`：内存成本，单位 KB → 这里是 64MB
+- `t=3`：迭代次数（时间成本）
+- `p=4`：并行度、线程数
+
+上线的时候，你可以根据服务器性能调高，越慢越安全；开发环境用默认值就行。
+
+## 和你之前纠结的 bcrypt 对比
+- bcrypt：老经典，有 72 字节硬上限（就是我们刚才踩坑的根源！）、参数调节空间小
+- Argon2id：无 72 字节限制、可自由调内存 / 时间、安全性更强，现在新项目优先选它
+
+## 工作流程（和你代码对应）
+1. 用户输入密码 `123456`
+2. argon2 自动**生成随机盐**（不用你自己管）
+3. 按照 m/t/p 参数做大量内存计算
+4. 返回一串包含：算法版本、参数、盐、哈希结果的字符串
+5. 校验的时候：把明文 + 同一份盐，跑一遍同样计算，对比结果，**不会反向解密**
+
+> 
+> 哈希≠加密：**不能解密回原始密码，只能比对**。
+
+## 你项目里的好处
+✅ 不再被 72 字节卡死，用户随便输长密码、中文密码
+✅ 现代标准，安全等级高于 bcrypt
+✅ passlib/argon2-cffi 库封装好，代码极简
+```
+
+```python
+from app.core.config import settings
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+#密码上下文，bcrypt算法使用
+# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+# 新版的底层 bcrypt 库，**不再自动静默截断，超过 72 字节直接抛错**; plain_password.encode("utf-8")[:72]
+# passlib 拿到 bytes 之后，**它内部又会再做一次 utf-8 编码**！
+# `b"123456"` 再 utf8 编码一遍，直接变成更长的字节流，触发 72 字节限制！
+
+# ✅ 方案 B（最简单，直接换成 argon2，不用处理长度，新项目首选）
+"""
+    hash_password(plain_password: str) -> str
+    - 作用：将明文密码转为不可逆的哈希字符串，用户注册时使用
+    - 提示：使用 bcrypt 算法，初始化全局密码上下文
+"""
+# def hash_password(plain_password: str) -> str:
+#     plain_bytes = plain_password.encode("utf-8")[:72]
+#     return pwd_context.hash(plain_bytes)
+def hash_password(plain_password: str) -> str:
+    return pwd_context.hash(plain_password)
+
+"""
+    verify_password(plain_password: str, hashed_password: str) -> bool
+    - 作用：比对明文密码和数据库中的哈希值是否一致，用户登录时校验使用
+"""
+# def verify_password(plain_password: str, hashed_password: str) -> bool:
+#     plain_bytes = plain_password.encode("utf-8")[:72]
+#     return pwd_context.verify(plain_bytes, hashed_password)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+"""
+    create_access_token(data: dict) -> str
+    - 作用：生成 JWT 访问令牌，登录成功后颁发给客户端
+    - 关键逻辑：
+      - 拷贝传入的数据，追加 `exp` 过期时间（当前时间 + 配置的有效期分钟数）
+      - 使用配置中的密钥和 HS256 算法签名生成令牌
+      - 标准用法：`data` 里传入 `{"sub": "用户ID字符串"}`，`sub` 是 JWT 标准的主体字段
+"""
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    # 设置过期时间
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+
+    # 生成签名token
+    encoded_jwt = jwt.encode(to_encode, key=settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+"""
+    decode_access_token(token: str) -> int | None
+    - 作用：解析校验令牌，有效则返回用户 ID，失效 / 篡改则返回 None
+    - 关键逻辑：
+      - 用同一密钥和算法解码，自动校验签名和过期时间
+      - 捕获所有 `JWTError` 异常，统一返回 None
+      - 从载荷中取出 `sub` 字段，转成整数用户 ID 返回
+"""
+def decode_access_token(token: str) -> int:
+    try:
+        payload = jwt.decode(token, key=settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+        else:
+            return user_id
+    except JWTError:
+        return None
+```
+
+# 第四步：用户业务服务
+
+属于 services 业务服务层，承上启下：向上被接口层调用，向下操作数据库；所有用户相关的业务逻辑都封装在这里，接口层不直接写业务逻辑。
+
+```markdown
+### 依赖项
+- 数据库会话 `Session`
+- 用户 ORM 模型 `User`
+- 用户请求模型 `UserCreate`
+- 安全工具里的密码哈希、校验函数
+--------------------------------------------------------------------
+
+### 需要实现的 3 个核心函数
+1. **`get_user_by_username(db: Session, username: str) -> User | None`**
+   - 作用：根据用户名查询用户对象
+   - 用途：注册时查重、登录时查询用户
+2. **`create_user(db: Session, user_in: UserCreate) -> User | None`**
+   - 作用：创建新用户
+   - 业务流程：
+     1. 先查询用户名是否已存在，存在则返回 None
+     2. 将传入的明文密码转为哈希值
+     3. 创建 User 数据库对象，加入会话、提交、刷新后返回
+   - 注意：数据库存储的是 `password_hash`，不是明文 password
+3. **`authenticate_user(db: Session, username: str, password: str) -> User | None`**
+   - 作用：校验用户名密码是否正确，登录专用
+   - 业务流程：
+     1. 先按用户名查用户，不存在直接返回 None
+     2. 用户存在则校验密码，密码错误返回 None
+     3. 都正确则返回用户对象
+
+### 分层规则提醒
+- 服务层只处理业务逻辑，不抛 HTTP 异常、不处理请求参数
+- 异常、状态码统一放到接口层处理，服务层用返回值（None / 对象）表示结果
+```
+
+
 
 # 启动项目
 
@@ -1311,9 +1478,29 @@ git push origin dev
   ```
 
 
+# git操作
+
+## commit type
+
+常用 type：
+
+- feat：新增可对外使用的功能（接口）
+- refactor：重构 / 搭建基础代码结构，不新增可运行功能
+- fix：修复 bug
+- docs：文档
+- chore：依赖、gitignore、配置文件这类杂活
+
+```bash
+# ✅ 推荐
+git commit -m "feat(schemas): 新增用户模块请求响应模型"
+
+# ✅ 更严谨一点（纯结构、还没写接口逻辑）
+git commit -m "refactor(schemas): 编写用户schema请求响应模型"
+```
+
 # 问题记录
 
-## 创建Class还是Function？
+## 1. 创建Class还是Function？
 
 ✅ 选 Class：
 
@@ -1327,10 +1514,114 @@ git push origin dev
 - 工厂获取实例（get_db、get_redis，FastAPI Depends 最常用）
 - 只有一两行逻辑，写类纯属增加代码量
 
-## alembic建表迁徙脚本
+## 2. alembic建表迁徙脚本
 
 1.生成建表的迁徙脚本命令不成功？
 
 运行`alembic revision --autogenerate -m "init tables"`命令，无法成功生成建表迁徙脚本；
 
 注意：.env文件中的`mysql+pymysql://root:XXX@127.0.0.1:XXX/blog_db?charset=utf8mb4`格式不对；`mysql + pymysql`之间需要去掉空格； 修改.env文件需要重启项目。
+
+## 3. 新版bcrypt库不支持自动静默截断
+
+找到了根源！现在新版的底层bcrypt库，**不再自动静默截断，超过72字节直接抛错**。 哪怕你传的是很短的`123456`，你现在的写法：
+
+```
+plain_bytes = plain_password.encode("utf-8")[:72]
+return pwd_context.hash(plain_bytes)
+```
+
+❌ 问题：传给 `pwd_context.hash` 的是 **bytes**，passlib拿到bytes之后，**它内部又会再做一次utf-8编码**！ `b"123456"` 再utf8编码一遍，直接变成更长的字节流，触发72字节限制！
+
+✅ 正确方案A（推荐，bcrypt+sha256，行业标准绕过72字节限制） 不用手动切字节，先sha256摘要，再丢给bcrypt，完美解决长度限制，而且安全：
+
+```
+import hashlib
+import base64
+
+def hash_password(plain_password: str) -> str:
+    # 先sha256，再base64，输出永远固定长度，不会超72字节
+    raw = hashlib.sha256(plain_password.encode("utf-8")).digest()
+    safe_pw = base64.b64encode(raw).decode("utf-8")
+    return pwd_context.hash(safe_pw)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    raw = hashlib.sha256(plain_password.encode("utf-8")).digest()
+    safe_pw = base64.b64encode(raw).decode("utf-8")
+    return pwd_context.verify(safe_pw, hashed_password)
+```
+
+✅ 方案B（最简单，直接换成argon2，不用处理长度，新项目首选）
+
+1. 安装
+
+```
+pip install argon2-cffi
+```
+
+1. 修改pwd_context
+
+```
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+```
+
+1. 函数变回原版，干净清爽：
+
+```
+def hash_password(plain_password: str) -> str:
+    return pwd_context.hash(plain_password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+```
+
+## 4. pyjwt 新版本参数名字改变
+
+pyjwt 新版本参数名字变了： 老版本：`secret_key=` 新版本：**`key=`**
+
+```python
+# 原来（报错）
+encoded_jwt = jwt.encode(to_encode, secret_key=settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+# 改成
+encoded_jwt = jwt.encode(to_encode, key=settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+```
+
+## 5. `datetime.utcnow()` 被弃用
+
+```python
+# 旧
+expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+# 新
+expire = datetime.now(datetime.UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+```
+
+## 6. `datetime.UTC`
+
+> 报错根源：`datetime.UTC` = 3.12新增常量；你当前Python版本 ≤3.11，识别不到。
+
+方案1｜标准兼容写法（生产首选，无警告、全版本兼容，推荐你直接用）
+
+导入 `timezone`，用 `timezone.utc`，这是官方在3.12之前的标准UTC对象，**3.8~3.11、3.12+全都能跑**
+
+```
+# 顶部导入
+from datetime import datetime, timedelta, timezone
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, key=settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+```
+
+✅ 优点：
+
+- 没有弃用警告
+- 时区感知datetime（JWT的exp校验严格要求时区感知，**utnow()是无时区，有安全隐患**）
+- 不用升级Python，不改环境 ❌ 缺点：就多导入一个 `timezone`，几乎没代价
+
