@@ -4,4 +4,4 @@ from app.api.v1 import user,comment
 api_router = APIRouter(prefix="/api/v1")
 
 # 注册子路由，每个子路由的前缀会和总路由前缀拼接
-api_router.include_router(user.router)
+api_router.include_router(user.router, prefix="/users", tags=["用户模块"])

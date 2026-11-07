@@ -1,5 +1,5 @@
 """
-    用户模块`user.py`的请求/响应模型
+    用户模块`user_service.py`的请求/响应模型
 
     请求模型：UserCreate（注册用）
     - `username`：字符串，必填

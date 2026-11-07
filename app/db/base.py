@@ -12,7 +12,7 @@ engine = create_engine(
 )
 
 # 创建SessionLocal会话工厂
-SessionLocal = sessionmaker(autocommit=False, autoFlush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ORM基类，后期所有的数据表模型都继承它
 class Base(DeclarativeBase):
